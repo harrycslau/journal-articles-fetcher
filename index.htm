@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Journal Articles Fetcher</title>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+        }
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border: 1px solid #ddd;
+            word-wrap: break-word;
+            cursor: pointer; /* Add pointer cursor to indicate clickable headers */
+        }
+        th {
+            background-color: #f2f2f2;
+            user-select: none; /* Prevent text selection on double-click */
+        }
+        tbody tr:nth-child(even) {
+            background-color: #f9f9f9;
+        }
+        #loadingDiv {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            border: 5px solid #ccc;
+            border-top-color: #666;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+        th.sorted-asc::after {
+            content: " ▲";
+        }
+        th.sorted-desc::after {
+            content: " ▼";
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Fetch Journal Articles</h1>
+    Fetch a maximum of 5 years of articles from a given journal ISSN,
+    so you can assess whether the journal is suitable for your manuscript or if you can join the discourse.<br>
+    For suggestions, please contact Harry Lau (chslau 'at' utu.fi).<br><br>
+    <b>Step 1:</b> Find the Journal ISSN in <a href="https://jfp.csc.fi/jufoportal" target="_blank">JUFO Portal</a><br>
+    <b>Step 2:</b> Enter the Journal ISSN:
+    <input type="text" id="journalIssnInput" placeholder="XXXX-XXXX" style="width: 100px">
+    <button id="fetchButton" onclick="startFetching()">Fetch Articles</button> (e.g. 0959-4752 for "Learning and Instruction")<br>
+    <b>Step 3:</b> <button id="copyButton" onclick="copyTitles()" disabled>Copy Titles</button> for further uses (e.g. summarize, comparison...)<br><br>
+
+    <div id="loadingDiv"></div>
+
+    <table id="articlesTable">
+        <thead>
+            <tr>
+                <th data-column="title" onclick="sortTable('title')">Title</th>
+                <th data-column="volume" onclick="sortTable('volume')">Volume</th>
+                <th data-column="issue" onclick="sortTable('issue')">Issue</th>
+                <th data-column="articleNumber" onclick="sortTable('articleNumber')">Article Number</th>
+                <th data-column="pubDate" onclick="sortTable('pubDate')">Publication Date</th>
+                <th data-column="doi" onclick="sortTable('doi')">DOI</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <script>
+        // Initialize state
+        let isLoading = false;
+        let hasMore = true;
+        let offset = 0; // Start from the first article
+        const rowsPerPage = 100; // Number of results to fetch per request
+        let journalIssn = '';
+        let allArticles = []; // Collect all articles
+
+        const fetchButton = document.getElementById('fetchButton');
+        const loadingDiv = document.getElementById('loadingDiv');
+        const articlesTableBody = document.getElementById('articlesTable').querySelector('tbody');
+        const headers = document.querySelectorAll('#articlesTable th');
+        let sortDirections = {}; // Keep track of sort directions for each column
+
+        // Load articles function
+        const loadArticles = async () => {
+            if (isLoading || !hasMore || !journalIssn) return;
+
+            isLoading = true;
+            fetchButton.disabled = true; // Disable fetch button while loading
+            loadingDiv.style.display = 'block'; // Show loading animation
+
+            const baseUrl = `https://api.crossref.org/journals/${journalIssn}/works`;
+            const currentYear = new Date().getFullYear();
+            const startYear = currentYear - 5;
+
+            // Prepare the query with the correct offset for pagination
+            const url = `${baseUrl}?filter=from-pub-date:${startYear},until-pub-date:${currentYear}&rows=${rowsPerPage}&offset=${offset}&sort=published&order=desc`;
+
+            try {
+                const response = await fetch(url);
+
+                // Check if the request failed
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch articles. Status code: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                // Validate if "items" array exists in the response
+                if (!data.message || !data.message.items || data.message.items.length === 0) {
+                    hasMore = false;
+                    loadingDiv.style.display = 'none'; // Hide loading animation
+                    return;
+                }
+
+                let articles = data.message.items.map(item => ({
+                    title: item.title[0] || "na",
+                    volume: item.volume || "na",
+                    issue: item.issue || "na",
+                    articleNumber: item["article-number"] || "na",
+                    pubDate: item.created["date-parts"][0],  // Date in [YYYY, MM, DD]
+                    doi: `https://doi.org/${item.DOI}`
+                }));
+
+                // Append newly fetched articles to allArticles
+                allArticles.push(...articles);
+
+                // Render the articles (without sorting)
+                renderArticles(articles);
+
+                // Increment offset for the next page
+                offset += rowsPerPage;
+
+                // If fewer articles were returned than requested, we reached the end
+                if (articles.length < rowsPerPage) {
+                    hasMore = false;
+                }
+
+                if (articlesTableBody.rows.length > 0) {
+                    document.getElementById('copyButton').disabled = false;
+                }
+
+            } catch (error) {
+                console.error("Error fetching articles:", error);
+                alert(`Error fetching articles: ${error.message}`);
+                hasMore = false;
+            } finally {
+                isLoading = false;
+                fetchButton.disabled = false; // Re-enable fetch button
+                loadingDiv.style.display = 'none'; // Hide loading animation
+            }
+        };
+
+        // Start fetching function triggered by the Fetch button
+        const startFetching = () => {
+            journalIssn = document.getElementById('journalIssnInput').value.trim();
+            if (!journalIssn) {
+                alert("Please enter a Journal ISSN");
+                return;
+            }
+
+            // Reset state
+            offset = 0;
+            hasMore = true;
+            isLoading = false;
+            allArticles = []; // Reset the articles array
+            sortDirections = {}; // Reset sort directions
+            articlesTableBody.innerHTML = ''; // Clear the table
+            headers.forEach(header => header.classList.remove('sorted-asc', 'sorted-desc')); // Clear sort indicators
+            loadingDiv.style.display = 'block'; // Show loading animation
+            document.getElementById('copyButton').disabled = true; // Disable copy titles button
+            loadArticles(); // Start loading articles
+        };
+
+        // Function to render articles in the table
+        const renderArticles = (articles) => {
+            articles.forEach(article => {
+                const row = articlesTableBody.insertRow();
+
+                const titleCell = row.insertCell(0);
+                titleCell.textContent = article.title;
+
+                const volumeCell = row.insertCell(1);
+                volumeCell.textContent = article.volume;
+
+                const issueCell = row.insertCell(2);
+                issueCell.textContent = article.issue;
+
+                const articleNumberCell = row.insertCell(3);
+                articleNumberCell.textContent = article.articleNumber;
+
+                const pubDateCell = row.insertCell(4);
+                pubDateCell.textContent = article.pubDate.join('-');
+
+                const doiCell = row.insertCell(5);
+                doiCell.innerHTML = `<a href="${article.doi}" target="_blank">${article.doi}</a>`;
+            });
+        };
+
+        // Infinite scrolling: automatically load more articles as the user scrolls down
+        window.addEventListener('scroll', () => {
+            if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 100 && !isLoading && hasMore) {
+                loadArticles();
+            }
+        });
+
+        // Function to copy titles to the clipboard
+        const copyTitles = () => {
+            const titles = Array.from(document.querySelectorAll('#articlesTable tbody tr')).map(row => row.querySelector('td:first-child').textContent);
+            navigator.clipboard.writeText(titles.join('\n'));
+            alert('Copied to the clipboard!');
+        };
+
+        // Sorting function
+        const sortTable = (column) => {
+            // Toggle sort direction for the column
+            sortDirections[column] = sortDirections[column] === 'asc' ? 'desc' : 'asc';
+
+            // Remove sort indicators from all headers
+            headers.forEach(header => header.classList.remove('sorted-asc', 'sorted-desc'));
+
+            // Add sort indicator to the clicked header
+            const header = document.querySelector(`th[data-column="${column}"]`);
+            header.classList.add(sortDirections[column] === 'asc' ? 'sorted-asc' : 'sorted-desc');
+
+            // Determine which columns are entirely 'na'
+            const columns = ['volume', 'issue', 'articleNumber', 'pubDate'];
+            const validColumns = columns.filter(col => {
+                return allArticles.some(article => article[col] !== 'na');
+            });
+
+            // If the clicked column is 'pubDate', we need to handle date comparison
+            const isDateColumn = column === 'pubDate';
+
+            // Sort the allArticles array
+            allArticles.sort((a, b) => {
+                let aValue = a[column];
+                let bValue = b[column];
+
+                if (aValue === 'na' && bValue === 'na') {
+                    return 0; // Both are 'na', considered equal
+                } else if (aValue === 'na') {
+                    return -1; // 'na' comes on top
+                } else if (bValue === 'na') {
+                    return 1; // 'na' comes on top
+                } else {
+                    let comparison = 0;
+                    if (isDateColumn) {
+                        const aDate = new Date(aValue.join('-'));
+                        const bDate = new Date(bValue.join('-'));
+                        comparison = aDate - bDate;
+                    } else {
+                        // Compare numerically if possible
+                        const aNum = parseInt(aValue, 10);
+                        const bNum = parseInt(bValue, 10);
+
+                        if (!isNaN(aNum) && !isNaN(bNum)) {
+                            comparison = aNum - bNum;
+                        } else {
+                            // Lexical comparison
+                            comparison = aValue.toString().localeCompare(bValue.toString());
+                        }
+                    }
+                    if (comparison !== 0) {
+                        return sortDirections[column] === 'asc' ? comparison : -comparison;
+                    } else {
+                        // If the values are equal, sort by the other valid columns
+                        for (let col of validColumns) {
+                            if (col === column) continue; // Skip the primary column
+                            let aVal = a[col];
+                            let bVal = b[col];
+
+                            if (aVal === 'na' && bVal === 'na') {
+                                continue;
+                            } else if (aVal === 'na') {
+                                return -1;
+                            } else if (bVal === 'na') {
+                                return 1;
+                            } else {
+                                let comp = 0;
+                                if (col === 'pubDate') {
+                                    const aDate = new Date(aVal.join('-'));
+                                    const bDate = new Date(bVal.join('-'));
+                                    comp = aDate - bDate;
+                                } else {
+                                    const aNum = parseInt(aVal, 10);
+                                    const bNum = parseInt(bVal, 10);
+
+                                    if (!isNaN(aNum) && !isNaN(bNum)) {
+                                        comp = aNum - bNum;
+                                    } else {
+                                        comp = aVal.toString().localeCompare(bVal.toString());
+                                    }
+                                }
+                                if (comp !== 0) {
+                                    return sortDirections[column] === 'asc' ? comp : -comp;
+                                }
+                            }
+                        }
+                        return 0;
+                    }
+                }
+            });
+
+            // Clear the table body and re-render the sorted articles
+            articlesTableBody.innerHTML = '';
+            renderArticles(allArticles);
+        };
+    </script>
+</body>
+</html>
